@@ -2,29 +2,33 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 
-# Wide-screen mobile optimization
+# Wide-screen layout for clean viewing on iPhone
 st.set_page_config(layout="wide")
 
-st.title("🌙 Institutional Live Market Feed")
-st.caption("Live Feed System via yfinance Engine | 15TF Mode")
+st.title("🌙 Macro Decision Terminal")
+st.caption("15TF Positional Execution Filter | Python Live Feed")
 
-# --- DATA HARVESTING ENGINE (The Free Live Feed) ---
-# Tickers used by Yahoo Finance for Indian Markets
+# --- CORE TICKER DICTIONARY ---
+# Mapping your precise watchlist to Yahoo Finance codes
 tickers = {
     "Nifty 50": "^NSEI",
     "Bank Nifty": "^NSEBANK",
+    "Reliance": "RELIANCE.NS",
+    "HDFC Bank": "HDFCBANK.NS",
     "ICICI Bank": "ICICIBANK.NS",
-    "HDFC Bank": "HDFCBANK.NS"
+    "Axis Bank": "AXISBANK.NS",
+    "Kotak Bank": "KOTAKBANK.NS",
+    "Divis Lab": "DIVISLAB.NS",
+    "India VIX": "^INDIAVIX"
 }
 
-@st.cache_data(ttl=60)  # Caches data for 60 seconds to stay fast and avoid getting blocked
-def fetch_live_data():
+@st.cache_data(ttl=60)  # Refresh cache every 60 seconds
+def fetch_live_market_data():
     prices = {}
     changes = {}
     for name, ticker in tickers.items():
         try:
             stock = yf.Ticker(ticker)
-            # Fetching today's intraday history
             hist = stock.history(period="2d", interval="15m")
             if not hist.empty:
                 current_price = hist['Close'].iloc[-1]
@@ -34,62 +38,85 @@ def fetch_live_data():
                 prices[name] = current_price
                 changes[name] = pct_change
             else:
-                prices[name] = 0.0
-                changes[name] = 0.0
+                prices[name], changes[name] = 0.0, 0.0
         except:
-            prices[name] = 0.0
-            changes[name] = 0.0
+            prices[name], changes[name] = 0.0, 0.0
     return prices, changes
 
-# Run the engine
-live_prices, live_changes = fetch_live_data()
+# Harvest active prices and metrics
+live_prices, live_changes = fetch_live_market_data()
 
-# --- REFRESH BUTTON FOR MOBILE ---
-if st.button("🔄 Force Refresh Prices"):
-    st.cache_data.clear()
-    st.rerun()
+# --- DECISION CALCULATOR ENGINE ---
+nifty_move = live_changes["Nifty 50"]
+bn_move    = live_changes["Bank Nifty"]
+vix_move   = live_changes["India VIX"]
+reliance   = live_changes["Reliance"]
 
-# --- VISUAL DISPLAY 1: THE BANK NIFTY ENGINE ROOM ---
-st.header("🏢 Heavyweight Sector Drivers")
-col1, col2 = st.columns(2)
+# Track how many of the 4 big banks are trading green today
+banks_green_count = 0
+for b in ["HDFC Bank", "ICICI Bank", "Axis Bank", "Kotak Bank"]:
+    if live_changes[b] > 0:
+        banks_green_count += 1
 
-with col1:
-    st.metric(
-        label="ICICI Bank (40.3% Engine Weight)", 
-        value=f"Rs. {live_prices['ICICI Bank']:.2f}", 
-        delta=f"{live_changes['ICICI Bank']:.2f}% Today"
-    )
-with col2:
-    st.metric(
-        label="HDFC Bank (14.7% Engine Weight)", 
-        value=f"Rs. {live_prices['HDFC Bank']:.2f}", 
-        delta=f"{live_changes['HDFC Bank']:.2f}% Today"
-    )
+# Algorithmic Checklist mapping to your specific terms
+final_decision = "CHOP ZONE"
+decision_color = "gray"
 
-# --- VISUAL DISPLAY 2: INDEX SPREADSHEET ---
-st.header("📊 Macro Index Performance Status")
+# 1. Check for Squeeze (Volatility exceptionally tight)
+if abs(nifty_move) < 0.15 and abs(bn_move) < 0.15:
+    final_decision = "SQUEEZE"
+    decision_color = "blue"
+# 2. Check for Heavy Bearish (Index dropping + VIX inflating or heavy bank breakdown)
+elif bn_move < -0.6 or (nifty_move < -0.4 and vix_move > 3.0) or banks_green_count == 0:
+    final_decision = "HEAVY BEARISH"
+    decision_color = "red"
+# 3. Check for Bullish (Indices positive + main drivers supportive)
+elif nifty_move > 0 and bn_move > 0 and reliance > 0 and banks_green_count >= 3:
+    final_decision = "BULLISH"
+    decision_color = "green"
+# 4. Fallback to default if trends conflict
+else:
+    final_decision = "CHOP ZONE"
+    decision_color = "orange"
 
-summary_data = {
-    "Index Asset": ["Nifty 50 Index", "Bank Nifty Index"],
-    "Live Trading Price": [f"Rs. {live_prices['Nifty 50']:.2f}", f"Rs. {live_prices['Bank Nifty']:.2f}"],
-    "Daily Volatility Vector": [f"{live_changes['Nifty 50']:.2f}%", f"{live_changes['Bank Nifty']:.2f}%"],
-    "Market Coherence Direction": [
-        "BULLISH MOMENTUM" if live_changes['Nifty 50'] > 0 else "BEARISH DRIFT",
-        "COHESIVE LONG" if live_changes['Bank Nifty'] > 0 else "LIQUIDITY DUMP"
+# --- VISIBLE DASHBOARD LAYOUT ---
+# High Visibility Top Box for rapid iPhone tracking
+st.header("⚡ Core Execution Summary")
+k1, k2, k3 = st.columns(3)
+
+with k1:
+    if decision_color == "green":
+        st.success(f"🔥 FINAL DECISION: {final_decision}")
+    elif decision_color == "red":
+        st.error(f"🛑 FINAL DECISION: {final_decision}")
+    elif decision_color == "blue":
+        st.info(f"⚡ FINAL DECISION: {final_decision} (Prepare for Breakout)")
+    else:
+        st.warning(f"⚠️ FINAL DECISION: {final_decision} (Stay Cash)")
+
+with k2:
+    st.metric(label="Nifty Position Direction", value=f"{nifty_move:.2f}%", delta="Bullish Edge" if nifty_move > 0 else "Bearish Pressure")
+with k3:
+    st.metric(label="Bank Performance Index", value=f"{bn_move:.2f}%", delta=f"{banks_green_count}/4 Banks Green")
+
+st.markdown("---")
+
+# --- COMPLETE WATCHLIST SPREADSHEET ---
+st.header("📊 Asset Correlation Sheet")
+
+summary_matrix = {
+    "Trading Asset": list(tickers.keys()),
+    "Live Price (Rs.)": [f"{live_prices[name]:,.2f}" for name in tickers.keys()],
+    "Daily Change (%)": [f"{live_changes[name]:+.2f}%" for name in tickers.keys()],
+    "Status": [
+        "BULLISH" if live_changes[name] > 0 else "BEARISH" for name in tickers.keys()
     ]
 }
 
-df = pd.DataFrame(summary_data)
+df = pd.DataFrame(summary_matrix)
 st.dataframe(df, use_container_width=True)
 
-# --- STRUCTURAL TRADING LOGIC NOTE ---
-st.sidebar.header("💡 Live Order Flow Analysis")
-icici_change = live_changes['ICICI Bank']
-hdfc_change = live_changes['HDFC Bank']
-
-if icici_change > 0 and hdfc_change > 0:
-    st.sidebar.success("🟢 BULLISH CONFIRMATION: Heavyweights are aligned. Support structures will likely hold.")
-elif icici_change < 0 and hdfc_change < 0:
-    st.sidebar.error("🔴 BEARISH DRIFT: Heavyweights dumping together. Do not catch falling knives at call floors.")
-else:
-    st.sidebar.warning("🟡 ENGINE CONFLICT: Banks fighting each other. High probability of chop inside the squeeze cloud.")
+# Mobile Manual Overdrive
+if st.button("🔄 Sync Market Data"):
+    st.cache_data.clear()
+    st.rerun()
