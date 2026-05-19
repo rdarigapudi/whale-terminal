@@ -106,16 +106,15 @@ summary_matrix = {
 df = pd.DataFrame(summary_matrix)
 
 # --- CONDITIONAL FORMATTING ENGINE ---
-# This function maps row colors based on the text inside the 'Status' column
 def apply_status_color(row):
     color_map = []
     for val in row:
         if val == "BULLISH":
-            # Forest green background with white text for crisp contrast
-            color_map.append("background-color: #1e4620; color: white; font-weight: bold;")
+            # Bright Emerald Green background with bold black text
+            color_map.append("background-color: #2ecc71; color: black; font-weight: bold;")
         elif val == "BEARISH":
-            # Maroon/Red background with white text
-            color_map.append("background-color: #5c1d1d; color: white; font-weight: bold;")
+            # Bright Crimson Red background with bold black text
+            color_map.append("background-color: #e74c3c; color: black; font-weight: bold;")
         else:
             color_map.append("")
     return color_map
