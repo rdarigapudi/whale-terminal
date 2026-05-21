@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import requests
+import time
 
 # Wide-screen layout for clean viewing on iPhone
 st.set_page_config(layout="wide")
@@ -128,12 +129,12 @@ st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
 
 # ==============================================================================
-# NEW INTEGRATION: DIRECT NSE INSTITUTIONAL OPEN INTEREST MODULE (ALL ASSETS)
+# NEW INTEGRATION: STEALTH NSE INSTITUTIONAL OPEN INTEREST MODULE 
 # ==============================================================================
 st.markdown("---")
 st.header("🛡️ Institutional Wall & Sentiment Matrix")
 
-# Simple selector covering all assets (excluding VIX which has no options chain here)
+# Simple selector covering all assets
 target_options = [
     "Nifty 50", "Bank Nifty", "Reliance", "HDFC Bank", 
     "ICICI Bank", "Axis Bank", "Kotak Bank", "Divis Lab"
@@ -158,28 +159,46 @@ def display_institutional_matrix(asset_choice):
     nse_type = asset_info["type"]
     
     try:
-        # 1. Establish a direct stealth connection to NSE Servers
+        # 1. Establish a stealth connection with advanced browser headers
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br"
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Referer": "https://www.nseindia.com/"
         }
         
-        session = requests.Session()
-        # Ping main page first to grab valid security session cookies
-        session.get("https://www.nseindia.com", headers=headers, timeout=5)
+        # 2. Add a Retry Engine (Try 3 times before failing)
+        max_retries = 3
+        raw_data = None
         
-        # Request live option chain data payload based on the correct asset folder
-        url = f"https://www.nseindia.com/api/option-chain-{nse_type}?symbol={nse_symbol}"
-        response = session.get(url, headers=headers, timeout=5)
-        
-        if response.status_code != 200:
-            st.warning("NSE Live Data Server is currently congested. Tap 'Sync Market Data' to try again.")
+        for attempt in range(max_retries):
+            try:
+                session = requests.Session()
+                session.headers.update(headers)
+                
+                # Ping main page to establish human-like session cookies
+                session.get("https://www.nseindia.com", timeout=5)
+                
+                # Request the exact option chain data payload
+                url = f"https://www.nseindia.com/api/option-chain-{nse_type}?symbol={nse_symbol}"
+                response = session.get(url, timeout=5)
+                
+                if response.status_code == 200:
+                    raw_data = response.json()
+                    break  # We broke through the shield, exit the retry loop
+                else:
+                    time.sleep(1) # Rest for 1 second before knocking again
+            except:
+                time.sleep(1)
+                
+        # If all 3 attempts fail, trigger the safety warning
+        if not raw_data:
+            st.warning("NSE Live Data Server is blocking the cloud connection. Tap 'Sync Market Data' to retry.")
             return
             
-        raw_data = response.json()
-        
-        # 2. Extract active front-month expiry and parse the order book
+        # 3. Extract active front-month expiry and parse the order book
         active_expiry = raw_data['records']['expiryDates'][0]
         options_list = [row for row in raw_data['records']['data'] if row['expiryDate'] == active_expiry]
         
@@ -193,7 +212,7 @@ def display_institutional_matrix(asset_choice):
             
         df = pd.DataFrame(parsed_data)
         
-        # 3. Calculate Master Option Put-Call Ratio (PCR)
+        # 4. Calculate Master Option Put-Call Ratio (PCR)
         total_call_oi = df['CE_OI'].sum()
         total_put_oi = df['PE_OI'].sum()
         pcr = total_put_oi / total_call_oi if total_call_oi > 0 else 0.0
@@ -222,7 +241,7 @@ def display_institutional_matrix(asset_choice):
             unsafe_html=True
         )
         
-        # 4. Locate active Live Spot Price from the NSE data to center the grid
+        # 5. Locate active Live Spot Price from the NSE data to center the grid
         underlying_price = raw_data['records']['underlyingValue']
         df['distance'] = (df['strike'] - underlying_price).abs()
         
@@ -280,6 +299,7 @@ def display_institutional_matrix(asset_choice):
 
 # Trigger Option calculation grid render pass
 display_institutional_matrix(asset_choice)
+
 
 # --- MANUAL REFRESH OVERDRIVE BAR ---
 st.markdown("---")
