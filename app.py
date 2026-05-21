@@ -129,3 +129,135 @@ st.dataframe(styled_df, use_container_width=True, hide_index=True)
 if st.button("🔄 Sync Market Data"):
     st.cache_data.clear()
     st.rerun()
+    # ==============================================================================
+#                 INSTITUTIONAL FLOOR & CEILING SENTIMENT ENGINE
+# ==============================================================================
+import datetime
+
+def display_institutional_matrix(asset_choice):
+    """
+    Scans option chain matrices and displays market conditions 
+    using explicit simplified structural tracking terminology.
+    """
+    st.markdown("---")
+    st.subheader("🛡️ Institutional Wall & Sentiment Matrix")
+
+    # Map tracking tokens cleanly
+    ticker_map = {
+        "Nifty 50": "^NSEI",
+        "Bank Nifty": "^NSEBANK"
+    }
+    
+    target_ticker = ticker_map.get(asset_choice, "^NSEI")
+    
+    try:
+        engine = yf.Ticker(target_ticker)
+        expiries = engine.options
+        
+        if not expiries:
+            st.info("Waiting for live option chain updates from exchange...")
+            return
+            
+        # Extract the front active monthly expiry contract set
+        active_expiry = expiries[0]
+        chain = engine.option_chain(active_expiry)
+        
+        calls_df = chain.calls
+        puts_df = chain.puts
+        
+        # Compute the Master Macro Sentiment Vector (PCR)
+        total_call_oi = calls_df['openInterest'].sum()
+        total_put_oi = puts_df['openInterest'].sum()
+        pcr = total_put_oi / total_call_oi if total_call_oi > 0 else 0.0
+        
+        # Sort out the core macro defensive walls
+        max_call_row = calls_df.loc[calls_df['openInterest'].idxmax()]
+        max_put_row = puts_df.loc[puts_df['openInterest'].idxmax()]
+        
+        ceiling_strike = max_call_row['strike']
+        floor_strike = max_put_row['strike']
+        
+        # Render the simplified Master Card
+        if pcr >= 1.3:
+            sentiment_text = "HEAVY BULL / GOING UP"
+            bg_color = "#2ecc71" # Bright Emerald
+            text_color = "black"
+        elif pcr <= 0.7:
+            sentiment_text = "HEAVY BEAR / CEILING LOCKED"
+            bg_color = "#e74c3c" # Bright Crimson
+            text_color = "black"
+        else:
+            sentiment_text = "CHOP ZONE / GOING SIDEWAYS"
+            bg_color = "#f1c40f" # Yellow
+            text_color = "black"
+            
+        st.markdown(
+            f'<div style="background-color:{bg_color}; padding:15px; border-radius:8px; text-align:center;">'
+            f'<h3 style="color:{text_color}; margin:0;">SYSTEM SENTIMENT: {sentiment_text}</h3>'
+            f'<p style="color:{text_color}; margin:5px 0 0 0; font-weight:bold;">Macro Put-Call Ratio (PCR): {pcr:.2f}</p>'
+            f'</div>', 
+            unsafe_html=True
+        )
+        
+        # Fetch underlying stock price to narrow structural strike window focus
+        hist = engine.history(period="1d")
+        spot_price = hist['Close'].iloc[-1] if not hist.empty else ceiling_strike
+        
+        # Filter down structural view to the 3 strikes closest to market center
+        calls_df['distance'] = (calls_df['strike'] - spot_price).abs()
+        closest_strikes = calls_df.nsmallest(3, 'distance')['strike'].tolist()
+        
+        grid_data = []
+        for strike in sorted(closest_strikes):
+            strike_call = calls_df[calls_df['strike'] == strike]
+            strike_put = puts_df[puts_df['strike'] == strike]
+            
+            call_oi = int(strike_call['openInterest'].iloc[0]) if not strike_call.empty else 0
+            put_oi = int(strike_put['openInterest'].iloc[0]) if not strike_put.empty else 0
+            
+            # Formulate tracking row allocations using clean terms
+            if call_oi > put_oi * 1.2:
+                state = "HEAVY BEAR"
+                action = "GOING DOWN"
+                row_color = "background-color: #e74c3c; color: black; font-weight: bold;"
+            elif put_oi > call_oi * 1.2:
+                state = "HEAVY BULL"
+                action = "GOING UP"
+                row_color = "background-color: #2ecc71; color: black; font-weight: bold;"
+            else:
+                state = "EQUAL FIGHT"
+                action = "GOING SIDEWAYS"
+                row_color = ""
+                
+            grid_data.append({
+                "Market Level (Strike)": int(strike),
+                "Who is Defending This Wall?": state,
+                "What Are They Doing Right Now?": action,
+                "Raw Call Volume (OI)": f"{call_oi:,}",
+                "Raw Put Volume (OI)": f"{put_oi:,}",
+                "style": row_color
+            })
+            
+        df_grid = pd.DataFrame(grid_data)
+        
+        # Direct CSS Row Injection formatting rule application
+        def style_rows(row):
+            return [row['style']] * len(row) if row['style'] else [''] * len(row)
+            
+        display_df = df_grid.drop(columns=['style'])
+        st.write("### 📊 Near-the-Money Strike Target Grid")
+        st.dataframe(
+            display_df.style.apply(style_rows, axis=1),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Print macro edge boundaries clear text alerts
+        st.info(f"📍 Major Absolute Roof Boundary: {int(ceiling_strike)} | 📍 Major Absolute Floor Boundary: {int(floor_strike)}")
+
+    except Exception as e:
+        st.warning("Data network resting. Will synchronize automatically on next systemic bar frame interval update.")
+
+# --- INJECT ROUTER TO MAIN EXECUTION CALL ---
+# To finalize integration, add this line right at the very bottom of your main wrapper function:
+# display_institutional_matrix(asset_choice)
