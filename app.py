@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+import requests
 
 # Wide-screen layout for clean viewing on iPhone
 st.set_page_config(layout="wide")
@@ -127,44 +128,79 @@ st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
 
 # ==============================================================================
-# NEW INTEGRATION: INSTITUTIONAL OPEN INTEREST SENTIMENT MODULE
+# NEW INTEGRATION: DIRECT NSE INSTITUTIONAL OPEN INTEREST MODULE (ALL ASSETS)
 # ==============================================================================
 st.markdown("---")
 st.header("🛡️ Institutional Wall & Sentiment Matrix")
 
-# Simple selector added directly to the main workspace for quick thumb layout navigation
-asset_choice = st.selectbox("Select Target Chain Analysis", ["Nifty 50", "Bank Nifty"])
+# Simple selector covering all assets (excluding VIX which has no options chain here)
+target_options = [
+    "Nifty 50", "Bank Nifty", "Reliance", "HDFC Bank", 
+    "ICICI Bank", "Axis Bank", "Kotak Bank", "Divis Lab"
+]
+asset_choice = st.selectbox("Select Target Chain Analysis", target_options)
 
 def display_institutional_matrix(asset_choice):
+    # Map selection directly to NSE official server symbols and exact server folders
     ticker_map = {
-        "Nifty 50": "^NSEI",
-        "Bank Nifty": "^NSEBANK"
+        "Nifty 50": {"symbol": "NIFTY", "type": "indices"},
+        "Bank Nifty": {"symbol": "BANKNIFTY", "type": "indices"},
+        "Reliance": {"symbol": "RELIANCE", "type": "equities"},
+        "HDFC Bank": {"symbol": "HDFCBANK", "type": "equities"},
+        "ICICI Bank": {"symbol": "ICICIBANK", "type": "equities"},
+        "Axis Bank": {"symbol": "AXISBANK", "type": "equities"},
+        "Kotak Bank": {"symbol": "KOTAKBANK", "type": "equities"},
+        "Divis Lab": {"symbol": "DIVISLAB", "type": "equities"}
     }
     
-    target_ticker = ticker_map.get(asset_choice, "^NSEI")
+    asset_info = ticker_map.get(asset_choice)
+    nse_symbol = asset_info["symbol"]
+    nse_type = asset_info["type"]
     
     try:
-        engine = yf.Ticker(target_ticker)
-        expiries = engine.options
+        # 1. Establish a direct stealth connection to NSE Servers
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br"
+        }
         
-        if not expiries:
-            st.info("Waiting for live option chain updates from exchange...")
+        session = requests.Session()
+        # Ping main page first to grab valid security session cookies
+        session.get("https://www.nseindia.com", headers=headers, timeout=5)
+        
+        # Request live option chain data payload based on the correct asset folder
+        url = f"https://www.nseindia.com/api/option-chain-{nse_type}?symbol={nse_symbol}"
+        response = session.get(url, headers=headers, timeout=5)
+        
+        if response.status_code != 200:
+            st.warning("NSE Live Data Server is currently congested. Tap 'Sync Market Data' to try again.")
             return
             
-        # Extract front active monthly expiry data packets 
-        active_expiry = expiries[0]
-        chain = engine.option_chain(active_expiry)
-        calls_df = chain.calls
-        puts_df = chain.puts
+        raw_data = response.json()
         
-        # Calculate Master Option Put-Call Ratio (PCR)
-        total_call_oi = calls_df['openInterest'].sum()
-        total_put_oi = puts_df['openInterest'].sum()
+        # 2. Extract active front-month expiry and parse the order book
+        active_expiry = raw_data['records']['expiryDates'][0]
+        options_list = [row for row in raw_data['records']['data'] if row['expiryDate'] == active_expiry]
+        
+        # Build clean structural matrix from the raw JSON
+        parsed_data = []
+        for row in options_list:
+            strike = row.get('strikePrice', 0)
+            ce_oi = row.get('CE', {}).get('openInterest', 0)
+            pe_oi = row.get('PE', {}).get('openInterest', 0)
+            parsed_data.append({'strike': strike, 'CE_OI': ce_oi, 'PE_OI': pe_oi})
+            
+        df = pd.DataFrame(parsed_data)
+        
+        # 3. Calculate Master Option Put-Call Ratio (PCR)
+        total_call_oi = df['CE_OI'].sum()
+        total_put_oi = df['PE_OI'].sum()
         pcr = total_put_oi / total_call_oi if total_call_oi > 0 else 0.0
         
         # Pull massive institutional absolute limit strikes
-        ceiling_strike = calls_df.loc[calls_df['openInterest'].idxmax()]['strike']
-        floor_strike = puts_df.loc[puts_df['openInterest'].idxmax()]['strike']
+        ceiling_strike = df.loc[df['CE_OI'].idxmax()]['strike']
+        floor_strike = df.loc[df['PE_OI'].idxmax()]['strike']
         
         # Translate macro ratio into your exact clean terminology rules
         if pcr >= 1.3:
@@ -186,18 +222,18 @@ def display_institutional_matrix(asset_choice):
             unsafe_html=True
         )
         
-        # Grab target asset close value to center our proximity rows
-        spot_price = live_prices.get(asset_choice, ceiling_strike)
-        calls_df['distance'] = (calls_df['strike'] - spot_price).abs()
-        closest_strikes = calls_df.nsmallest(3, 'distance')['strike'].tolist()
+        # 4. Locate active Live Spot Price from the NSE data to center the grid
+        underlying_price = raw_data['records']['underlyingValue']
+        df['distance'] = (df['strike'] - underlying_price).abs()
+        
+        # Filter strictly down to the 3 absolute closest strike zones
+        closest_strikes = df.nsmallest(3, 'distance').sort_values('strike')
         
         grid_data = []
-        for strike in sorted(closest_strikes):
-            strike_call = calls_df[calls_df['strike'] == strike]
-            strike_put = puts_df[puts_df['strike'] == strike]
-            
-            call_oi = int(strike_call['openInterest'].iloc[0]) if not strike_call.empty else 0
-            put_oi = int(strike_put['openInterest'].iloc[0]) if not strike_put.empty else 0
+        for _, row in closest_strikes.iterrows():
+            strike = int(row['strike'])
+            call_oi = int(row['CE_OI'])
+            put_oi = int(row['PE_OI'])
             
             # Map order-book depth weightings to simplified visual states
             if call_oi > put_oi * 1.2:
@@ -214,7 +250,7 @@ def display_institutional_matrix(asset_choice):
                 row_color = ""
                 
             grid_data.append({
-                "Market Level (Strike)": int(strike),
+                "Market Level (Strike)": strike,
                 "Who is Defending This Wall?": state,
                 "What Are They Doing Right Now?": action,
                 "Raw Call Volume (OI)": f"{call_oi:,}",
@@ -229,18 +265,21 @@ def display_institutional_matrix(asset_choice):
             return [row['style']] * len(row) if row['style'] else [''] * len(row)
             
         display_df = df_grid.drop(columns=['style'])
-        st.write("### 📊 Near-the-Money Strike Target Grid")
+        
+        # Display the live NSE tracked price just above the grid
+        st.write(f"### 📊 Near-the-Money Strike Target Grid")
+        st.caption(f"🎯 **Active Tracked Spot Price:** ₹{underlying_price:,.2f}")
+        
         st.dataframe(display_df.style.apply(style_rows, axis=1), use_container_width=True, hide_index=True)
         
         # Output absolute boundary tags clearly below matrix
         st.info(f"📍 Major Absolute Roof Boundary: {int(ceiling_strike)} | 📍 Major Absolute Floor Boundary: {int(floor_strike)}")
 
-    except:
-        st.warning("Data network resting. Will synchronize automatically on next systemic refresh.")
+    except Exception as e:
+        st.warning("NSE Live Data Server is resetting the connection. Tap 'Sync Market Data' at the bottom to reconnect.")
 
 # Trigger Option calculation grid render pass
 display_institutional_matrix(asset_choice)
-
 
 # --- MANUAL REFRESH OVERDRIVE BAR ---
 st.markdown("---")
