@@ -2,13 +2,17 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import requests
-import time
 
 # Wide-screen layout for clean viewing on iPhone
 st.set_page_config(layout="wide")
 
 st.title("🌙 Macro Decision Terminal")
-st.caption("15TF Positional Execution Filter | Python Live Feed")
+st.caption("15TF Positional Execution Filter | Upstox Live Feed")
+
+# --- SECURE UPSTOX BROKER CONNECTION ---
+st.sidebar.header("🔑 Broker Authentication")
+upstox_token = st.sidebar.text_input("Paste Daily Upstox Access Token", type="password")
+st.sidebar.markdown("[Click here to generate token](https://developer.upstox.com/)")
 
 # --- CORE TICKER DICTIONARY ---
 tickers = {
@@ -97,7 +101,6 @@ st.markdown("---")
 # --- COMPLETE WATCHLIST SPREADSHEET ---
 st.header("📊 Asset Correlation Sheet")
 
-# Create standard dataset
 summary_matrix = {
     "Trading Asset": list(tickers.keys()),
     "Live Price (Rs.)": [f"{live_prices[name]:,.2f}" for name in tickers.keys()],
@@ -107,29 +110,23 @@ summary_matrix = {
 
 df = pd.DataFrame(summary_matrix)
 
-# --- CONDITIONAL FORMATTING ENGINE ---
 def apply_status_color(row):
     color_map = []
     for val in row:
         if val == "BULLISH":
-            # Bright Emerald Green background with bold black text
             color_map.append("background-color: #2ecc71; color: black; font-weight: bold;")
         elif val == "BEARISH":
-            # Bright Crimson Red background with bold black text
             color_map.append("background-color: #e74c3c; color: black; font-weight: bold;")
         else:
             color_map.append("")
     return color_map
 
-# Apply styling selectively to the 'Status' column
 styled_df = df.style.apply(apply_status_color, subset=["Status"])
-
-# Render the stylized data matrix with the index column hidden for a clean mobile look
 st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
 
 # ==============================================================================
-# NEW INTEGRATION: STEALTH NSE INSTITUTIONAL OPEN INTEREST MODULE 
+# NEW INTEGRATION: UPSTOX DIRECT API INSTITUTIONAL OPEN INTEREST MODULE
 # ==============================================================================
 st.markdown("---")
 st.header("🛡️ Institutional Wall & Sentiment Matrix")
@@ -141,85 +138,67 @@ target_options = [
 ]
 asset_choice = st.selectbox("Select Target Chain Analysis", target_options)
 
-def display_institutional_matrix(asset_choice):
-    # Map selection directly to NSE official server symbols and exact server folders
-    ticker_map = {
-        "Nifty 50": {"symbol": "NIFTY", "type": "indices"},
-        "Bank Nifty": {"symbol": "BANKNIFTY", "type": "indices"},
-        "Reliance": {"symbol": "RELIANCE", "type": "equities"},
-        "HDFC Bank": {"symbol": "HDFCBANK", "type": "equities"},
-        "ICICI Bank": {"symbol": "ICICIBANK", "type": "equities"},
-        "Axis Bank": {"symbol": "AXISBANK", "type": "equities"},
-        "Kotak Bank": {"symbol": "KOTAKBANK", "type": "equities"},
-        "Divis Lab": {"symbol": "DIVISLAB", "type": "equities"}
+def display_institutional_matrix(asset_choice, upstox_token):
+    if not upstox_token:
+        st.info("Waiting for Upstox connection... Please paste your daily Access Token in the sidebar to load live Whale data.")
+        return
+
+    # Upstox requires exact internal instrument keys (ISINs mapped here for your exact watchlist)
+    upstox_instrument_map = {
+        "Nifty 50": "NSE_INDEX|Nifty 50",
+        "Bank Nifty": "NSE_INDEX|Nifty Bank",
+        "Reliance": "NSE_EQ|INE002A01018",
+        "HDFC Bank": "NSE_EQ|INE040A01034",
+        "ICICI Bank": "NSE_EQ|INE090A01021",
+        "Axis Bank": "NSE_EQ|INE238A01034",
+        "Kotak Bank": "NSE_EQ|INE237A01028",
+        "Divis Lab": "NSE_EQ|INE361B01024"
     }
     
-    asset_info = ticker_map.get(asset_choice)
-    nse_symbol = asset_info["symbol"]
-    nse_type = asset_info["type"]
+    instrument_key = upstox_instrument_map.get(asset_choice)
     
     try:
-        # 1. Establish a stealth connection with advanced browser headers
+        # Establish official API connection to Upstox Option Chain endpoint
+        url = f"https://api.upstox.com/v2/option/chain?instrument_key={instrument_key}"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Referer": "https://www.nseindia.com/"
+            'Accept': 'application/json',
+            'Authorization': f'Bearer {upstox_token}'
         }
         
-        # 2. Add a Retry Engine (Try 3 times before failing)
-        max_retries = 3
-        raw_data = None
+        response = requests.get(url, headers=headers, timeout=5)
         
-        for attempt in range(max_retries):
-            try:
-                session = requests.Session()
-                session.headers.update(headers)
-                
-                # Ping main page to establish human-like session cookies
-                session.get("https://www.nseindia.com", timeout=5)
-                
-                # Request the exact option chain data payload
-                url = f"https://www.nseindia.com/api/option-chain-{nse_type}?symbol={nse_symbol}"
-                response = session.get(url, timeout=5)
-                
-                if response.status_code == 200:
-                    raw_data = response.json()
-                    break  # We broke through the shield, exit the retry loop
-                else:
-                    time.sleep(1) # Rest for 1 second before knocking again
-            except:
-                time.sleep(1)
-                
-        # If all 3 attempts fail, trigger the safety warning
-        if not raw_data:
-            st.warning("NSE Live Data Server is blocking the cloud connection. Tap 'Sync Market Data' to retry.")
+        if response.status_code == 401:
+            st.error("Authentication Failed: Your Upstox token has expired or is invalid. Please generate a new one.")
+            return
+        elif response.status_code != 200:
+            st.warning("Upstox Data Server is resting. Tap 'Sync Market Data' to reconnect.")
             return
             
-        # 3. Extract active front-month expiry and parse the order book
-        active_expiry = raw_data['records']['expiryDates'][0]
-        options_list = [row for row in raw_data['records']['data'] if row['expiryDate'] == active_expiry]
+        raw_data = response.json()
         
-        # Build clean structural matrix from the raw JSON
+        # Parse Upstox's extremely clean JSON option chain data
+        options_data = raw_data.get('data', [])
+        if not options_data:
+            st.warning("No active option contracts found for this asset right now.")
+            return
+
         parsed_data = []
-        for row in options_list:
-            strike = row.get('strikePrice', 0)
-            ce_oi = row.get('CE', {}).get('openInterest', 0)
-            pe_oi = row.get('PE', {}).get('openInterest', 0)
+        for row in options_data:
+            strike = row.get('strike_price', 0)
+            ce_oi = row.get('call_options', {}).get('market_data', {}).get('oi', 0)
+            pe_oi = row.get('put_options', {}).get('market_data', {}).get('oi', 0)
             parsed_data.append({'strike': strike, 'CE_OI': ce_oi, 'PE_OI': pe_oi})
             
-        df = pd.DataFrame(parsed_data)
+        df_chain = pd.DataFrame(parsed_data)
         
-        # 4. Calculate Master Option Put-Call Ratio (PCR)
-        total_call_oi = df['CE_OI'].sum()
-        total_put_oi = df['PE_OI'].sum()
+        # Calculate Master Option Put-Call Ratio (PCR)
+        total_call_oi = df_chain['CE_OI'].sum()
+        total_put_oi = df_chain['PE_OI'].sum()
         pcr = total_put_oi / total_call_oi if total_call_oi > 0 else 0.0
         
         # Pull massive institutional absolute limit strikes
-        ceiling_strike = df.loc[df['CE_OI'].idxmax()]['strike']
-        floor_strike = df.loc[df['PE_OI'].idxmax()]['strike']
+        ceiling_strike = df_chain.loc[df_chain['CE_OI'].idxmax()]['strike']
+        floor_strike = df_chain.loc[df_chain['PE_OI'].idxmax()]['strike']
         
         # Translate macro ratio into your exact clean terminology rules
         if pcr >= 1.3:
@@ -241,12 +220,12 @@ def display_institutional_matrix(asset_choice):
             unsafe_html=True
         )
         
-        # 5. Locate active Live Spot Price from the NSE data to center the grid
-        underlying_price = raw_data['records']['underlyingValue']
-        df['distance'] = (df['strike'] - underlying_price).abs()
+        # Pull active spot price from your Yahoo cache to center the grid perfectly
+        underlying_price = live_prices.get(asset_choice, ceiling_strike)
+        df_chain['distance'] = (df_chain['strike'] - underlying_price).abs()
         
         # Filter strictly down to the 3 absolute closest strike zones
-        closest_strikes = df.nsmallest(3, 'distance').sort_values('strike')
+        closest_strikes = df_chain.nsmallest(3, 'distance').sort_values('strike')
         
         grid_data = []
         for _, row in closest_strikes.iterrows():
@@ -285,21 +264,17 @@ def display_institutional_matrix(asset_choice):
             
         display_df = df_grid.drop(columns=['style'])
         
-        # Display the live NSE tracked price just above the grid
         st.write(f"### 📊 Near-the-Money Strike Target Grid")
         st.caption(f"🎯 **Active Tracked Spot Price:** ₹{underlying_price:,.2f}")
         
         st.dataframe(display_df.style.apply(style_rows, axis=1), use_container_width=True, hide_index=True)
-        
-        # Output absolute boundary tags clearly below matrix
         st.info(f"📍 Major Absolute Roof Boundary: {int(ceiling_strike)} | 📍 Major Absolute Floor Boundary: {int(floor_strike)}")
 
     except Exception as e:
-        st.warning("NSE Live Data Server is resetting the connection. Tap 'Sync Market Data' at the bottom to reconnect.")
+        st.error(f"System encountered an error connecting to Upstox. Please verify token.")
 
 # Trigger Option calculation grid render pass
-display_institutional_matrix(asset_choice)
-
+display_institutional_matrix(asset_choice, upstox_token)
 
 # --- MANUAL REFRESH OVERDRIVE BAR ---
 st.markdown("---")
